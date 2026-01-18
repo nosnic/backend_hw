@@ -184,8 +184,6 @@ with open("coverage.json") as f:
             echo "⏱️ **Test Duration:** ${DURATION}s" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           fi
-          
-          # Ссылка на артефакты
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "📦 **Artifacts:**" >> $GITHUB_STEP_SUMMARY
           echo "- Coverage HTML Report (available in workflow artifacts)" >> $GITHUB_STEP_SUMMARY
