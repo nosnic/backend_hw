@@ -1,3 +1,4 @@
+# app/main.py
 from fastapi import FastAPI, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -13,9 +14,9 @@ app = FastAPI()
 # Метрики Prometheus
 Instrumentator().instrument(app).expose(app)
 
-# retry для подключения к БД
-@app.on_event("startup")
-async def startup():
+
+async def init_db():
+    """Инициализация БД с retry логикой"""
     while True:
         try:
             async with engine.begin() as conn:
@@ -25,14 +26,14 @@ async def startup():
             print("PostgreSQL не готов, жду 2 секунды...")
             await asyncio.sleep(2)
 
-@app.post("/items/", response_model=ItemRead)
-async def create_item(item: ItemCreate, db: AsyncSession = Depends(get_db)):
-    new_item = Item(name=item.name)
-    db.add(new_item)
-    await db.commit()
-    await db.refresh(new_item)
 
-    # retry для RabbitMQ
+@app.on_event("startup")
+async def startup():
+    await init_db()
+
+
+async def send_to_rabbitmq(message: str):
+    """Отправка сообщения в RabbitMQ с retry логикой"""
     connection = None
     while connection is None:
         try:
@@ -44,7 +45,18 @@ async def create_item(item: ItemCreate, db: AsyncSession = Depends(get_db)):
     async with connection:
         channel = await connection.channel()
         await channel.default_exchange.publish(
-            aio_pika.Message(body=f"Item created: {new_item.id}".encode()),
+            aio_pika.Message(body=message.encode()),
             routing_key="task_queue"
         )
+
+
+@app.post("/items/", response_model=ItemRead)
+async def create_item(item: ItemCreate, db: AsyncSession = Depends(get_db)):
+    new_item = Item(name=item.name)
+    db.add(new_item)
+    await db.commit()
+    await db.refresh(new_item)
+
+    await send_to_rabbitmq(f"Item created: {new_item.id}")
+
     return new_item
