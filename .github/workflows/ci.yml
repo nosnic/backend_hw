@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     services:
-      db:
+      postgres:
         image: postgres:15
         env:
           POSTGRES_USER: postgres
@@ -58,19 +58,30 @@ jobs:
       - name: Wait for services
         run: |
           echo "Waiting for PostgreSQL..."
-          timeout 60 bash -c 'until pg_isready -h localhost -p 5432; do sleep 1; done'
-          echo "PostgreSQL is ready!"
+          for i in {1..60}; do
+            if pg_isready -h localhost -p 5432 2>/dev/null; then
+              echo "PostgreSQL is ready!"
+              break
+            fi
+            sleep 1
+          done
           
           echo "Waiting for RabbitMQ..."
-          timeout 60 bash -c 'until curl -s http://localhost:15672 > /dev/null; do sleep 1; done'
-          echo "RabbitMQ is ready!"
+          for i in {1..60}; do
+            if curl -s http://localhost:15672 > /dev/null 2>&1; then
+              echo "RabbitMQ is ready!"
+              break
+            fi
+            sleep 1
+          done
 
       - name: Run tests with coverage
         env:
           DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/postgres
-          RABBITMQ_URL: amqp://guest:guest@localhost/
+          RABBITMQ_URL: amqp://guest:guest@localhost:5672/
         run: |
-          python -m pytest app/test_main.py -v \
+          set -o pipefail
+          python -m pytest app/tests/ -v \
             --cov=app \
             --cov-report=term-missing \
             --cov-report=xml \
@@ -78,8 +89,7 @@ jobs:
             --cov-report=json \
             --cov-fail-under=90 \
             --asyncio-mode=auto \
-            --junitxml=junit.xml \
-            2>&1 | tee pytest-output.txt
+            --junitxml=junit.xml 2>&1 | tee pytest-output.txt
 
       - name: Generate Test Summary
         if: always()
@@ -89,10 +99,10 @@ jobs:
           
           # Парсинг результатов pytest
           if [ -f pytest-output.txt ]; then
-            PASSED=$(grep -oP '\d+(?= passed)' pytest-output.txt | tail -1 || echo "0")
-            FAILED=$(grep -oP '\d+(?= failed)' pytest-output.txt | tail -1 || echo "0")
-            SKIPPED=$(grep -oP '\d+(?= skipped)' pytest-output.txt | tail -1 || echo "0")
-            WARNINGS=$(grep -oP '\d+(?= warning)' pytest-output.txt | tail -1 || echo "0")
+            PASSED=$(grep -E '[0-9]+ passed' pytest-output.txt | tail -1 | grep -oE '[0-9]+' || echo "0")
+            FAILED=$(grep -E '[0-9]+ failed' pytest-output.txt | tail -1 | grep -oE '[0-9]+' || echo "0")
+            SKIPPED=$(grep -E '[0-9]+ skipped' pytest-output.txt | tail -1 | grep -oE '[0-9]+' || echo "0")
+            WARNINGS=$(grep -E '[0-9]+ warnings' pytest-output.txt | tail -1 | grep -oE '[0-9]+' || echo "0")
             
             echo "### Test Statistics" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
@@ -107,83 +117,115 @@ jobs:
           
           # Парсинг покрытия из coverage.json
           if [ -f coverage.json ]; then
-            TOTAL_COV=$(python3 -c "import json; data=json.load(open('coverage.json')); print(f\"{data['totals']['percent_covered']:.2f}\")")
-            TOTAL_STMTS=$(python3 -c "import json; data=json.load(open('coverage.json')); print(data['totals']['num_statements'])")
-            COVERED_STMTS=$(python3 -c "import json; data=json.load(open('coverage.json')); print(data['totals']['covered_lines'])")
-            MISSING_STMTS=$(python3 -c "import json; data=json.load(open('coverage.json')); print(data['totals']['missing_lines'])")
-            
-            echo "### 📊 Code Coverage" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            
-            # Определяем цвет бейджа на основе процента покрытия
-            if (( $(echo "$TOTAL_COV >= 90" | bc -l) )); then
-              BADGE_COLOR="brightgreen"
-              EMOJI="🟢"
-            elif (( $(echo "$TOTAL_COV >= 80" | bc -l) )); then
-              BADGE_COLOR="green"
-              EMOJI="🟡"
-            elif (( $(echo "$TOTAL_COV >= 70" | bc -l) )); then
-              BADGE_COLOR="yellow"
-              EMOJI="🟠"
-            else
-              BADGE_COLOR="red"
-              EMOJI="🔴"
-            fi
-            
-            echo "#### $EMOJI Total Coverage: **${TOTAL_COV}%**" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "![Coverage](https://img.shields.io/badge/coverage-${TOTAL_COV}%25-${BADGE_COLOR})" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            
-            echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
-            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
-            echo "| Total Statements | $TOTAL_STMTS |" >> $GITHUB_STEP_SUMMARY
-            echo "| Covered | $COVERED_STMTS |" >> $GITHUB_STEP_SUMMARY
-            echo "| Missing | $MISSING_STMTS |" >> $GITHUB_STEP_SUMMARY
-            echo "| **Coverage %** | **${TOTAL_COV}%** |" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            
-            # Детальное покрытие по файлам
-            echo "<details>" >> $GITHUB_STEP_SUMMARY
-            echo "<summary>📁 Coverage by File</summary>" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| File | Statements | Missing | Coverage |" >> $GITHUB_STEP_SUMMARY
-            echo "|------|------------|---------|----------|" >> $GITHUB_STEP_SUMMARY
-            
-            python3 -c '
+            python3 << 'EOF'
 import json
-with open("coverage.json") as f:
-    data = json.load(f)
-    for file_path, file_data in sorted(data["files"].items()):
+import sys
+
+try:
+    with open('coverage.json', 'r') as f:
+        data = json.load(f)
+
+    total_cov = data['totals']['percent_covered']
+    total_stmts = data['totals']['num_statements']
+    covered_stmts = data['totals']['covered_lines']
+    missing_stmts = data['totals']['missing_lines']
+    
+    print(f"TOTAL_COV={total_cov:.2f}")
+    print(f"TOTAL_STMTS={total_stmts}")
+    print(f"COVERED_STMTS={covered_stmts}")
+    print(f"MISSING_STMTS={missing_stmts}")
+    
+    # Детальное покрытие по файлам
+    file_coverage = []
+    for file_path, file_data in sorted(data.get("files", {}).items()):
         if file_path.startswith("app/"):
-            file_name = file_path
+            coverage = file_data["summary"]["percent_covered"]
             stmts = file_data["summary"]["num_statements"]
             missing = file_data["summary"]["missing_lines"]
-            coverage = file_data["summary"]["percent_covered"]
+            file_coverage.append(f"{file_path}|{stmts}|{missing}|{coverage:.1f}")
 
-            if coverage >= 90:
-                emoji = "🟢"
-            elif coverage >= 80:
-                emoji = "🟡"
-            elif coverage >= 70:
-                emoji = "🟠"
-            else:
-                emoji = "🔴"
+    print("FILE_COVERAGE=" + ";".join(file_coverage))
+except Exception as e:
+    print(f"ERROR={str(e)}", file=sys.stderr)
+    sys.exit(1)
+EOF
+          
+            if [ -n "$TOTAL_COV" ]; then
+              echo "### 📊 Code Coverage" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              
+              # Определяем цвет бейджа на основе процента покрытия
+              if (( $(echo "$TOTAL_COV >= 90" | bc -l) )); then
+                BADGE_COLOR="brightgreen"
+                EMOJI="🟢"
+              elif (( $(echo "$TOTAL_COV >= 80" | bc -l) )); then
+                BADGE_COLOR="green"
+                EMOJI="🟡"
+              elif (( $(echo "$TOTAL_COV >= 70" | bc -l) )); then
+                BADGE_COLOR="yellow"
+                EMOJI="🟠"
+              else
+                BADGE_COLOR="red"
+                EMOJI="🔴"
+              fi
 
-            print(f"| {file_name} | {stmts} | {missing} | {emoji} {coverage:.1f}% |")
-' >> $GITHUB_STEP_SUMMARY
-            
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "</details>" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
+              echo "#### $EMOJI Total Coverage: **${TOTAL_COV}%**" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "![Coverage](https://img.shields.io/badge/coverage-${TOTAL_COV}%25-${BADGE_COLOR})" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              
+              echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+              echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+              echo "| Total Statements | $TOTAL_STMTS |" >> $GITHUB_STEP_SUMMARY
+              echo "| Covered | $COVERED_STMTS |" >> $GITHUB_STEP_SUMMARY
+              echo "| Missing | $MISSING_STMTS |" >> $GITHUB_STEP_SUMMARY
+              echo "| **Coverage %** | **${TOTAL_COV}%** |" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              
+              # Детальное покрытие по файлам
+              if [ -n "$FILE_COVERAGE" ]; then
+                echo "<details>" >> $GITHUB_STEP_SUMMARY
+                echo "<summary>📁 Coverage by File</summary>" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "| File | Statements | Missing | Coverage |" >> $GITHUB_STEP_SUMMARY
+                echo "|------|------------|---------|----------|" >> $GITHUB_STEP_SUMMARY
+                
+                IFS=';' read -ra FILES <<< "$FILE_COVERAGE"
+                for file_info in "${FILES[@]}"; do
+                  IFS='|' read -ra PARTS <<< "$file_info"
+                  file_name="${PARTS[0]}"
+                  stmts="${PARTS[1]}"
+                  missing="${PARTS[2]}"
+                  coverage="${PARTS[3]}"
+                  
+                  if (( $(echo "$coverage >= 90" | bc -l) )); then
+                    emoji="🟢"
+                  elif (( $(echo "$coverage >= 80" | bc -l) )); then
+                    emoji="🟡"
+                  elif (( $(echo "$coverage >= 70" | bc -l) )); then
+                    emoji="🟠"
+                  else
+                    emoji="🔴"
+                  fi
+                  
+                  echo "| $file_name | $stmts | $missing | $emoji $coverage% |" >> $GITHUB_STEP_SUMMARY
+                done
+                
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "</details>" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+              fi
+            fi
           fi
           
           # Время выполнения
           if [ -f pytest-output.txt ]; then
-            DURATION=$(grep -oP '\d+\.\d+(?=s)' pytest-output.txt | tail -1 || echo "N/A")
+            DURATION=$(grep -E '[0-9]+\.[0-9]+s' pytest-output.txt | tail -1 | grep -oE '[0-9]+\.[0-9]+' || echo "N/A")
             echo "⏱️ **Test Duration:** ${DURATION}s" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           fi
+          
+          # Ссылка на артефакты
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "📦 **Artifacts:**" >> $GITHUB_STEP_SUMMARY
           echo "- Coverage HTML Report (available in workflow artifacts)" >> $GITHUB_STEP_SUMMARY
@@ -205,9 +247,19 @@ with open("coverage.json") as f:
           path: htmlcov/
           retention-days: 30
 
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: |
+            pytest-output.txt
+            junit.xml
+          retention-days: 30
+
   lint:
     runs-on: ubuntu-latest
-
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -242,7 +294,7 @@ with open("coverage.json") as f:
   docker-build:
     runs-on: ubuntu-latest
     needs: [test]
-
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
