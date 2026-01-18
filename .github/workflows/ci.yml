@@ -105,32 +105,53 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
           fi
           
-          # Парсинг покрытия из вывода pytest
+          # Парсинг покрытия из вывода pytest (несколько вариантов)
           if [ -f pytest-output.txt ]; then
-            # Ищем строку вида "TOTAL ... 95%"
-            COVERAGE=$(grep -oP 'TOTAL\s+\d+\s+\d+\s+\d+\s+\d+\s+\K\d+(?=%)' pytest-output.txt | tail -1 || echo "0")
+            # Вариант 1: ищем "TOTAL ... XX%"
+            COVERAGE=$(grep "TOTAL" pytest-output.txt | grep -oP '\d+%' | grep -oP '\d+' | tail -1 || echo "")
+            
+            # Вариант 2: если не нашли, ищем "Total coverage: XX.XX%"
+            if [ -z "$COVERAGE" ]; then
+              COVERAGE=$(grep -i "total coverage" pytest-output.txt | grep -oP '\d+\.\d+|\d+' | head -1 || echo "")
+            fi
+            
+            # Вариант 3: ищем строку с процентом в конце
+            if [ -z "$COVERAGE" ]; then
+              COVERAGE=$(grep "Required test coverage" pytest-output.txt | grep -oP '\d+\.\d+|\d+' | tail -1 || echo "")
+            fi
+            
+            # Округляем если есть дробная часть
+            if [ -n "$COVERAGE" ]; then
+              COVERAGE=$(printf "%.0f" "$COVERAGE" 2>/dev/null || echo "$COVERAGE")
+            else
+              COVERAGE="N/A"
+            fi
             
             echo "### 📊 Code Coverage" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             
-            # Определяем эмодзи и цвет на основе процента покрытия
-            if [ "$COVERAGE" -ge 90 ]; then
-              BADGE_COLOR="brightgreen"
-              EMOJI="🟢"
-            elif [ "$COVERAGE" -ge 80 ]; then
-              BADGE_COLOR="green"
-              EMOJI="🟡"
-            elif [ "$COVERAGE" -ge 70 ]; then
-              BADGE_COLOR="yellow"
-              EMOJI="🟠"
+            if [ "$COVERAGE" != "N/A" ]; then
+              # Определяем эмодзи и цвет на основе процента покрытия
+              if [ "$COVERAGE" -ge 90 ] 2>/dev/null; then
+                BADGE_COLOR="brightgreen"
+                EMOJI="🟢"
+              elif [ "$COVERAGE" -ge 80 ] 2>/dev/null; then
+                BADGE_COLOR="green"
+                EMOJI="🟡"
+              elif [ "$COVERAGE" -ge 70 ] 2>/dev/null; then
+                BADGE_COLOR="yellow"
+                EMOJI="🟠"
+              else
+                BADGE_COLOR="red"
+                EMOJI="🔴"
+              fi
+              
+              echo "#### $EMOJI Total Coverage: **${COVERAGE}%**" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "![Coverage](https://img.shields.io/badge/coverage-${COVERAGE}%25-${BADGE_COLOR})" >> $GITHUB_STEP_SUMMARY
             else
-              BADGE_COLOR="red"
-              EMOJI="🔴"
+              echo "#### ⚠️ Coverage data not available" >> $GITHUB_STEP_SUMMARY
             fi
-            
-            echo "#### $EMOJI Total Coverage: **${COVERAGE}%**" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "![Coverage](https://img.shields.io/badge/coverage-${COVERAGE}%25-${BADGE_COLOR})" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           fi
           
@@ -140,6 +161,16 @@ jobs:
             echo "⏱️ **Test Duration:** ${DURATION}s" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           fi
+          
+          # Показать последние строки вывода для отладки
+          echo "<details>" >> $GITHUB_STEP_SUMMARY
+          echo "<summary>📋 Full Coverage Output</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          grep -A 10 "TOTAL\|coverage" pytest-output.txt 2>/dev/null || echo "No coverage output found" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           
           # Ссылка на артефакты
           echo "---" >> $GITHUB_STEP_SUMMARY
