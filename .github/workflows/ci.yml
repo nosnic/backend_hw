@@ -75,8 +75,121 @@ jobs:
             --cov-report=term-missing \
             --cov-report=xml \
             --cov-report=html \
+            --cov-report=json \
             --cov-fail-under=90 \
-            --asyncio-mode=auto
+            --asyncio-mode=auto \
+            --junitxml=junit.xml \
+            2>&1 | tee pytest-output.txt
+
+      - name: Generate Test Summary
+        if: always()
+        run: |
+          echo "## 🧪 Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Парсинг результатов pytest
+          if [ -f pytest-output.txt ]; then
+            PASSED=$(grep -oP '\d+(?= passed)' pytest-output.txt | tail -1 || echo "0")
+            FAILED=$(grep -oP '\d+(?= failed)' pytest-output.txt | tail -1 || echo "0")
+            SKIPPED=$(grep -oP '\d+(?= skipped)' pytest-output.txt | tail -1 || echo "0")
+            WARNINGS=$(grep -oP '\d+(?= warning)' pytest-output.txt | tail -1 || echo "0")
+            
+            echo "### Test Statistics" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| ✅ Passed | $PASSED |" >> $GITHUB_STEP_SUMMARY
+            echo "| ❌ Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
+            echo "| ⏭️ Skipped | $SKIPPED |" >> $GITHUB_STEP_SUMMARY
+            echo "| ⚠️ Warnings | $WARNINGS |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Парсинг покрытия из coverage.json
+          if [ -f coverage.json ]; then
+            TOTAL_COV=$(python3 -c "import json; data=json.load(open('coverage.json')); print(f\"{data['totals']['percent_covered']:.2f}\")")
+            TOTAL_STMTS=$(python3 -c "import json; data=json.load(open('coverage.json')); print(data['totals']['num_statements'])")
+            COVERED_STMTS=$(python3 -c "import json; data=json.load(open('coverage.json')); print(data['totals']['covered_lines'])")
+            MISSING_STMTS=$(python3 -c "import json; data=json.load(open('coverage.json')); print(data['totals']['missing_lines'])")
+            
+            echo "### 📊 Code Coverage" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            # Определяем цвет бейджа на основе процента покрытия
+            if (( $(echo "$TOTAL_COV >= 90" | bc -l) )); then
+              BADGE_COLOR="brightgreen"
+              EMOJI="🟢"
+            elif (( $(echo "$TOTAL_COV >= 80" | bc -l) )); then
+              BADGE_COLOR="green"
+              EMOJI="🟡"
+            elif (( $(echo "$TOTAL_COV >= 70" | bc -l) )); then
+              BADGE_COLOR="yellow"
+              EMOJI="🟠"
+            else
+              BADGE_COLOR="red"
+              EMOJI="🔴"
+            fi
+            
+            echo "#### $EMOJI Total Coverage: **${TOTAL_COV}%**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "![Coverage](https://img.shields.io/badge/coverage-${TOTAL_COV}%25-${BADGE_COLOR})" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Total Statements | $TOTAL_STMTS |" >> $GITHUB_STEP_SUMMARY
+            echo "| Covered | $COVERED_STMTS |" >> $GITHUB_STEP_SUMMARY
+            echo "| Missing | $MISSING_STMTS |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Coverage %** | **${TOTAL_COV}%** |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            # Детальное покрытие по файлам
+            echo "<details>" >> $GITHUB_STEP_SUMMARY
+            echo "<summary>📁 Coverage by File</summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| File | Statements | Missing | Coverage |" >> $GITHUB_STEP_SUMMARY
+            echo "|------|------------|---------|----------|" >> $GITHUB_STEP_SUMMARY
+            
+            python3 << 'PYTHON_SCRIPT' >> $GITHUB_STEP_SUMMARY
+import json
+with open('coverage.json') as f:
+    data = json.load(f)
+    for file_path, file_data in sorted(data['files'].items()):
+        if file_path.startswith('app/'):
+            file_name = file_path
+            stmts = file_data['summary']['num_statements']
+            missing = file_data['summary']['missing_lines']
+            coverage = file_data['summary']['percent_covered']
+
+            # Эмодзи на основе покрытия
+            if coverage >= 90:
+                emoji = "🟢"
+            elif coverage >= 80:
+                emoji = "🟡"
+            elif coverage >= 70:
+                emoji = "🟠"
+            else:
+                emoji = "🔴"
+
+            print(f"| {file_name} | {stmts} | {missing} | {emoji} {coverage:.1f}% |")
+PYTHON_SCRIPT
+            
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Время выполнения
+          if [ -f pytest-output.txt ]; then
+            DURATION=$(grep -oP '\d+\.\d+(?=s)' pytest-output.txt | tail -1 || echo "N/A")
+            echo "⏱️ **Test Duration:** ${DURATION}s" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Ссылка на артефакты
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "📦 **Artifacts:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Coverage HTML Report (available in workflow artifacts)" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload coverage reports
         uses: codecov/codecov-action@v4
@@ -94,17 +207,6 @@ jobs:
           name: coverage-report
           path: htmlcov/
           retention-days: 30
-
-      - name: Test Summary
-        if: always()
-        run: |
-          echo "## Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Tests completed" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ -f coverage.xml ]; then
-            echo "📊 Coverage report generated" >> $GITHUB_STEP_SUMMARY
-          fi
 
   lint:
     runs-on: ubuntu-latest
