@@ -150,18 +150,17 @@ jobs:
             echo "| File | Statements | Missing | Coverage |" >> $GITHUB_STEP_SUMMARY
             echo "|------|------------|---------|----------|" >> $GITHUB_STEP_SUMMARY
             
-            python3 << 'PYTHON_SCRIPT' >> $GITHUB_STEP_SUMMARY
+            python3 -c '
 import json
-with open('coverage.json') as f:
+with open("coverage.json") as f:
     data = json.load(f)
-    for file_path, file_data in sorted(data['files'].items()):
-        if file_path.startswith('app/'):
+    for file_path, file_data in sorted(data["files"].items()):
+        if file_path.startswith("app/"):
             file_name = file_path
-            stmts = file_data['summary']['num_statements']
-            missing = file_data['summary']['missing_lines']
-            coverage = file_data['summary']['percent_covered']
+            stmts = file_data["summary"]["num_statements"]
+            missing = file_data["summary"]["missing_lines"]
+            coverage = file_data["summary"]["percent_covered"]
 
-            # Эмодзи на основе покрытия
             if coverage >= 90:
                 emoji = "🟢"
             elif coverage >= 80:
@@ -172,7 +171,7 @@ with open('coverage.json') as f:
                 emoji = "🔴"
 
             print(f"| {file_name} | {stmts} | {missing} | {emoji} {coverage:.1f}% |")
-PYTHON_SCRIPT
+' >> $GITHUB_STEP_SUMMARY
             
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "</details>" >> $GITHUB_STEP_SUMMARY
